@@ -1,0 +1,21 @@
+# Programs of Honor's LXQt desktop that GNOME has a counterpart for, or that configure LXQt itself.
+# Hidden from the app grid of GNOME only; under LXQt they stay where they were. One desktop id a line.
+fcitx5-configtool
+featherpad
+kbd-layout-viewer5
+lximage-qt
+lxqt-admin-time
+lxqt-admin-user
+lxqt-archiver
+obconf-qt
+org.fcitx.Fcitx5
+org.fcitx.fcitx5-migrator
+pavucontrol-qt
+pcmanfm-qt
+pcmanfm-qt-desktop-pref
+qlipper
+qps
+qterminal
+qterminal-drop
+toggle-keyboard
+xvkbd

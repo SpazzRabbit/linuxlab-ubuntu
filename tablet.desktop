@@ -1,0 +1,10 @@
+# Linux Lab: Honor's "My Tablet" opens the storage of the tablet in the file manager of LXQt.
+# Under GNOME it opens in Files.
+[Desktop Entry]
+Type=Application
+Name=My Tablet
+Comment=Browse files on your tablet (Android shared storage)
+Exec=nautilus /tablet
+Icon=folder-publicshare
+Terminal=false
+Categories=System;FileManager;

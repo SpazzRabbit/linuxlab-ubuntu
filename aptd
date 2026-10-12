@@ -1,0 +1,63 @@
+#!/usr/bin/python3
+"""aptd for Linux Lab: the stock daemon, taught who its callers are.
+
+aptd reads the user of a caller from /proc/<pid>/status. Under PRoot that file tells the truth: every
+process has the uid of the Android app, a number no account inside Linux has. The owner of a file is
+another matter: PRoot shows the files of the app as the files of whoever looks, so for aptd they all
+belong to root. A caller could then never give aptd a terminal or a debconf socket ("has to be
+owned by the owner of the transaction"), and Language Support stopped with that error.
+
+Here the uid of the app is read the way PRoot reads it for files: as the user aptd itself runs as.
+"""
+import os
+
+from defer import inline_callbacks, return_value
+
+# what /usr/sbin/aptd does when D-Bus starts it without a locale
+os.environ.setdefault("LANG", "C.UTF-8")
+
+from aptdaemon import policykit1  # noqa: E402
+
+
+def ids_of_app():
+    ids = {}
+    with open("/proc/self/status") as status:
+        for line in status:
+            if line.startswith(("Uid:", "Gid:")):
+                ids[line[:3]] = int(line.split()[1])
+    return ids["Uid"], ids["Gid"]
+
+
+APP_UID, APP_GID = ids_of_app()
+stock_uid = policykit1.get_uid_from_dbus_name
+stock_info = policykit1.get_proc_info_from_dbus_name
+
+
+def seen_uid(uid):
+    return os.getuid() if uid == APP_UID else uid
+
+
+def seen_gid(gid):
+    return os.getgid() if gid == APP_GID else gid
+
+
+@inline_callbacks
+def get_uid_from_dbus_name(dbus_name, bus=None):
+    uid = yield stock_uid(dbus_name, bus)
+    return_value(seen_uid(uid))
+
+
+@inline_callbacks
+def get_proc_info_from_dbus_name(dbus_name, bus=None):
+    pid, uid, gid, cmdline = yield stock_info(dbus_name, bus)
+    return_value((pid, seen_uid(uid), seen_gid(gid), cmdline))
+
+
+# under a real root the ids of this process are in the account database, and nothing changes
+if APP_UID != os.getuid():
+    policykit1.get_uid_from_dbus_name = get_uid_from_dbus_name
+    policykit1.get_proc_info_from_dbus_name = get_proc_info_from_dbus_name
+
+import aptdaemon.core  # noqa: E402
+
+aptdaemon.core.main()

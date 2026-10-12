@@ -1,0 +1,41 @@
+#!/bin/bash
+# systemd-run for a Linux without systemd, first in the PATH of the GNOME session.
+#
+# Programs written for a systemd desktop start what they run "in a scope of its own":
+#     systemd-run --user --scope --collect --unit=NAME.scope [options] -- COMMAND
+# The terminal of Ubuntu (Ptyxis) does that for every tab, and without systemd the tab says
+# "Failed to connect to user scope bus" and has no shell. A scope only groups processes for
+# accounting, the command itself runs as a plain child. So that is what happens here: the options
+# are dropped, the command runs. Everything else systemd-run can do goes to the real program.
+original=("$@")
+scope=0
+while [ $# -gt 0 ]; do
+    case "$1" in
+    --)
+        shift
+        break
+        ;;
+    --scope) scope=1 ;;
+    --setenv=*) export "${1#--setenv=}" ;;
+    --working-directory=*) cd "${1#--working-directory=}" 2>/dev/null ;;
+    -E | --setenv)
+        export "$2"
+        shift
+        ;;
+    --working-directory)
+        cd "$2" 2>/dev/null
+        shift
+        ;;
+    # options that take their value as the next word
+    -u | -p | -M | -H | --unit | --description | --slice | --property | --uid | --gid | --nice | --machine | --host)
+        shift
+        ;;
+    -*) ;;
+    *) break ;;
+    esac
+    shift
+done
+if [ $scope = 1 ] && [ $# -gt 0 ]; then
+    exec "$@"
+fi
+exec /usr/bin/systemd-run "${original[@]}"

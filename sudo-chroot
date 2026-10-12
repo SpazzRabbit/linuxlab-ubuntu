@@ -1,0 +1,59 @@
+#!/bin/bash
+# sudo in the chroot mode of Linux Lab: llroot puts this file over /usr/bin/sudo for the desktop it runs.
+#
+# Every file of the tree belongs to the user of Linux Lab, root's files included: PRoot only says
+# otherwise. In the chroot nothing pretends, and the real sudo, which must belong to root, refuses.
+# What a command run with sudo needs here is what it got under PRoot: to be told it is root while
+# its files stay the user's. fakeroot does that (its TCP flavour: Android has no System V IPC).
+# Real root is not handed out: everything in this tree can be changed by any program of Linux Lab.
+user=
+login=0
+shell=0
+while [ $# -gt 0 ]; do
+    case "$1" in
+    -u | -g | -p | -C | -h | -r | -t | -T | -U) [ "$1" = -u ] && user=$2; shift 2 ;;
+    --user=*) user=${1#--user=}; shift ;;
+    -i | --login) login=1; shift ;;
+    -s | --shell) shell=1; shift ;;
+    -v | --validate | -k | --reset-timestamp | -K | --remove-timestamp) exit 0 ;;
+    -l | --list) echo "User $(id -un) may run the following commands: (ALL) ALL (fakeroot, chroot mode of Linux Lab)"; exit 0 ;;
+    -V | --version) echo "sudo for the chroot mode of Linux Lab (fakeroot)"; exit 0 ;;
+    --) shift; break ;;
+    -*) shift ;; # -E, -H, -n, -S, -b, -A, -P and the rest change nothing here
+    *) break ;;
+    esac
+done
+# "sudo NAME=value ... command": the variables are set for the command, as sudo does
+vars=()
+while [ $# -gt 0 ] && [[ "$1" =~ ^[A-Za-z_][A-Za-z0-9_]*= ]]; do
+    vars+=("$1")
+    shift
+done
+if [ ${#vars[@]} -gt 0 ] && [ $# -gt 0 ]; then
+    set -- env "${vars[@]}" "$@"
+fi
+# another user than root: that user's files are the same user's here
+if [ -n "$user" ] && [ "$user" != root ] && [ "$user" != 0 ] && [ "$user" != "#0" ]; then
+    exec "$@"
+fi
+# under fakeroot already (sudo inside sudo): root as far as it goes
+if [ -n "${FAKEROOTKEY:-}" ]; then
+    if [ $# -eq 0 ]; then
+        exec /bin/bash -l
+    fi
+    exec "$@"
+fi
+fake=$(command -v fakeroot-tcp || command -v fakeroot) || { echo "sudo: fakeroot is not installed" >&2; exit 1; }
+if [ $# -eq 0 ]; then
+    if [ $login = 1 ]; then
+        exec "$fake" -- /bin/bash -l
+    elif [ $shell = 1 ]; then
+        exec "$fake" -- "${SHELL:-/bin/bash}"
+    fi
+    echo "usage: sudo command" >&2
+    exit 1
+fi
+if [ $shell = 1 ] || [ $login = 1 ]; then
+    exec "$fake" -- /bin/bash -c "$*"
+fi
+exec "$fake" -- "$@"

@@ -1,0 +1,7 @@
+// Linux Lab: the desktop user is the owner of this Linux and already runs anything as root through
+// sudo, which asks no password here. There is also no login session for polkit to find, so its usual
+// "an active local user may" does not apply. The same user is therefore allowed everything outright.
+polkit.addRule(function (action, subject) {
+    if (subject.user == "honor")
+        return polkit.Result.YES;
+});

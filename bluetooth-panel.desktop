@@ -1,0 +1,7 @@
+# Linux Lab: Android keeps Bluetooth to itself (an app may not open the adapter), so the Bluetooth page of
+# Settings could only ever say "No Bluetooth Found". Settings leaves out a page whose entry is hidden.
+# Installed as /usr/local/share/applications/gnome-bluetooth-panel.desktop; delete it to get the page back.
+[Desktop Entry]
+Type=Application
+Name=Bluetooth
+Hidden=true

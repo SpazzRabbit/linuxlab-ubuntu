@@ -1,0 +1,34 @@
+#!/bin/bash
+# Starts a system D-Bus service: the bus calls this with the name it was asked for.
+#
+# On a PC that is the job of a setuid helper of D-Bus, or of systemd. Linux Lab has neither, and its
+# system bus runs as the desktop user, so the service is started through sudo (which asks nothing
+# here) as the user its .service file names.
+#
+# In the chroot mode (see llchroot.py) sudo is fakeroot, and a program under fakeroot cannot show
+# its credentials to D-Bus: the kernel refuses the uid 0 it claims. The service never appeared, and
+# whoever asked for it waited the 25 seconds of the bus: GNOME Shell did, at every start, for
+# org.freedesktop.Accounts. There the user owns every file anyway, and the service is started as is.
+#
+# Only services known to work without an init system are started. The others (logind, UDisks,
+# NetworkManager and so on) stay "not available", which is what GNOME is prepared for.
+name=$1
+case "$name" in
+org.freedesktop.Accounts | org.freedesktop.PolicyKit1 | org.debian.apt | com.ubuntu.LanguageSelector | org.freedesktop.PackageKit) ;;
+*) exit 1 ;;
+esac
+
+for dir in /opt/linuxlab-gnome/system-services /usr/local/share/dbus-1/system-services \
+    /usr/share/dbus-1/system-services /lib/dbus-1/system-services; do
+    file=$dir/$name.service
+    [ -f "$file" ] || continue
+    command=$(sed -n 's/^Exec=//p' "$file" | head -1)
+    user=$(sed -n 's/^User=//p' "$file" | head -1)
+    [ -n "$command" ] || exit 1
+    if [ "${LINUXLAB_ENGINE:-}" = chroot ] || grep -qs "chroot mode of Linux Lab" /usr/bin/sudo; then
+        exec env ${DBUS_SYSTEM_BUS_ADDRESS:+DBUS_SYSTEM_BUS_ADDRESS=$DBUS_SYSTEM_BUS_ADDRESS} $command
+    fi
+    # the bus of the session, wherever it listens (sudo passes nothing else on)
+    exec sudo -n -u "${user:-root}" -- env ${DBUS_SYSTEM_BUS_ADDRESS:+DBUS_SYSTEM_BUS_ADDRESS=$DBUS_SYSTEM_BUS_ADDRESS} $command
+done
+exit 1

@@ -1,0 +1,159 @@
+#!/bin/bash
+# The desktop of Linux Lab: Ubuntu's GNOME or Honor's LXQt, and the change from one to the other.
+#
+# Honor's start-desktop.sh starts the desktop with the bare command "startlxqt", and the app writes
+# that script anew on every start. So the choice is made here: /usr/local/bin is earlier in PATH
+# than /usr/bin, where the real startlxqt lives. start-desktop.sh ends, and Linux with it, when this
+# script does. So it stays for as long as Linux Lab is open and starts one desktop after another.
+#
+#   /etc/linuxlab-desktop   "gnome" or "lxqt": the desktop to start
+#   /etc/linuxlab-engine    "chroot": the desktop runs in a chroot of this tree instead of under PRoot,
+#                           through llroot, a root service of a rooted tablet that the helper app
+#                           starts (see llchroot.py). Without an answer from it, PRoot as before.
+#   SIGUSR1                 the choice was changed: the running desktop is ended and the chosen one
+#                           started. lldesktop.py sends it, for the helper app of Android and for
+#                           "install.sh gnome|lxqt".
+G=/opt/linuxlab-gnome
+NOW=${XDG_RUNTIME_DIR:-/tmp}/linuxlab-desktop
+ENGINE_NOW=${XDG_RUNTIME_DIR:-/tmp}/linuxlab-engine
+
+# The app of Linux Lab plays the sound of Linux until a line with " exit" or "signal" in it shows
+# up in the output of the container, from any program; Honor's own PulseAudio and X server can
+# write one. After that it listens again only when it reads "StartFinished" there. The output of
+# this script is that of the container, so: say it whenever nobody listens.
+(
+    while sleep 5; do
+        listeners=$(LC_ALL=C pactl list short source-outputs 2>/dev/null) || continue
+        case "$listeners" in *protocol-simple*) ;; *) echo StartFinished ;; esac
+    done
+) &
+helpers=$!
+if [ -f $G/lldesktop.py ]; then
+    python3 $G/lldesktop.py --serve $$ >/dev/null 2>&1 &
+    helpers="$helpers $!"
+fi
+
+session=
+desktop=
+engine=proot
+switching=0
+stopping=0
+fallback=0
+no_chroot=0
+# While GNOME runs, its bridge shows its frames under the name of the screen file of the X server and
+# keeps the real one aside. A bridge that was killed could not put it back: LXQt would run behind the
+# last frame of GNOME. The real one is the file the X server has mapped, whatever it is called now;
+# the others are buffers nobody draws into any more.
+restore_screen() {
+    local name=/home/XvfbScreen/Xvfb_screen0 server live file
+    server=$(pgrep -o -x Xvfb) || return 0
+    live=$(awk '$2 ~ /s/ && /\/XvfbScreen\/Xvfb_screen0/ { print $5; exit }' /proc/$server/maps 2>/dev/null)
+    [ -n "$live" ] || return 0
+    for file in $name.llbridge-xvfb $name.llbridge-a $name.llbridge-b; do
+        [ -e $file ] || continue
+        if [ "$(stat -c %i $file)" = "$live" ]; then
+            mv -f $file $name
+        else
+            rm -f $file
+        fi
+    done
+}
+
+# Tells the running desktop to end. GNOME's session script (the one inside dbus-run-session) stops its
+# programs in order, and LXQt's session does; all of the session at once is for the one that does
+# not go in ten seconds.
+end_desktop() {
+    [ -n "$session" ] || return
+    if [ "$engine" = chroot ]; then
+        kill "$session" 2>/dev/null # llchroot.py passes it on to llroot
+    elif [ "$desktop" = gnome ]; then
+        pkill -TERM -P "$session" -f 'gnome-session.sh --inside' 2>/dev/null || kill -- -"$session" 2>/dev/null
+    else
+        kill "$session" 2>/dev/null
+    fi
+    (
+        ending=$session
+        sleep 10
+        kill -0 "$ending" 2>/dev/null && kill -- -"$ending" 2>/dev/null
+    ) &
+}
+finish() {
+    kill $helpers 2>/dev/null
+    exit "$1"
+}
+trap 'switching=1; fallback=0; no_chroot=0; end_desktop' USR1
+trap 'stopping=1; end_desktop' TERM INT
+
+while :; do
+    desktop=lxqt
+    if [ $fallback = 0 ] && [ "$(cat /etc/linuxlab-desktop 2>/dev/null)" = gnome ] && [ -x $G/gnome-session.sh ]; then
+        desktop=gnome
+    fi
+    engine=proot
+    if [ $no_chroot = 0 ] && [ "$(cat /etc/linuxlab-engine 2>/dev/null)" = chroot ] && [ -f $G/llchroot.py ]; then
+        engine=chroot
+    fi
+    switching=0
+    echo $desktop >"$NOW"
+    echo $engine >"$ENGINE_NOW"
+    started=$(date +%s)
+    [ $desktop = lxqt ] && restore_screen
+    # a session of its own, so that all of the desktop can be told to end, and what it leaves found
+    if [ $engine = chroot ]; then
+        # llroot ends all of the desktop itself, buses included
+        setsid python3 $G/llchroot.py run $desktop &
+    elif [ $desktop = gnome ]; then
+        setsid $G/gnome-session.sh &
+    else
+        # LXQt starts a session bus that outlives it; the ones that were there before are not its own
+        buses=" $(pgrep -x dbus-daemon | tr '\n' ' ')"
+        setsid /usr/bin/startlxqt "$@" &
+    fi
+    session=$!
+    # the choice changed while this desktop was being started
+    [ $switching = 1 ] && end_desktop
+    # a signal ends the waiting, not the desktop
+    while kill -0 $session 2>/dev/null; do
+        wait $session
+        code=$?
+    done
+    lived=$(($(date +%s) - started))
+    # what the desktop left behind: its buses, the programs that outlive their desktop
+    pkill -s $session 2>/dev/null
+    sleep 1
+    pkill -KILL -s $session 2>/dev/null
+    if [ $desktop = lxqt ] && [ $engine = proot ]; then
+        for bus in $(pgrep -x dbus-daemon); do
+            case "$buses" in *" $bus "*) continue ;; esac
+            grep -qa -e --fork /proc/$bus/cmdline 2>/dev/null && kill $bus 2>/dev/null
+        done
+    fi
+    # A desktop that was told to stop is over.
+    [ $stopping = 1 ] && finish $code
+    if [ $engine = chroot ] && [ "$code" = 90 ]; then
+        # nobody to run it in the chroot: the helper app is not there, or has no root
+        echo "[startlxqt] llroot does not answer, starting $desktop under PRoot" >&2
+        no_chroot=1
+        continue
+    fi
+    [ $switching = 1 ] && continue
+    # LXQt that ended by itself (Leave in its menu) takes Linux Lab with it, as it always did
+    [ $desktop = lxqt ] && finish $code
+    case $code in
+    82) continue ;; # Restart or Log Out in the menu of GNOME: the desktop starts anew
+    83) # Power Off: the desktop and all its programs are gone. The container stays, behind a
+        # black screen that waits for a touch (see lloff.py for why it must), then the desktop
+        # starts anew. Without that screen Honor's script stops with this one, and Linux with it.
+        if GDK_BACKEND=x11 NO_AT_BRIDGE=1 python3 $G/lloff.py >>"$HOME/.cache/linuxlab-gnome/session.log" 2>&1; then
+            continue
+        fi
+        finish 0
+        ;;
+    esac
+    # A GNOME that ended by itself (it does so only when GNOME Shell cannot be kept alive) would leave
+    # a black screen: Honor's desktop comes up instead, until Linux Lab is started again or the choice
+    # is made anew.
+    # No word here that the app of Linux Lab takes for a crash (see gnome-session.sh).
+    echo "[startlxqt] GNOME is over after $lived s with code $code, starting LXQt" >&2
+    fallback=1
+done

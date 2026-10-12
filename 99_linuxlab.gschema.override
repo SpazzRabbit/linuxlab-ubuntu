@@ -1,0 +1,20 @@
+# Defaults of the Ubuntu session inside HONOR Linux Lab.
+# Only what must differ from a PC; everything else is what Ubuntu ships.
+
+[org.gnome.shell]
+enabled-extensions = ['linuxlab@linuxlab-touchfix']
+
+# the dock of a fresh Ubuntu, less the programs that come as snaps (snapd does not run here)
+[org.gnome.shell:ubuntu]
+favorite-apps = ['firefox.desktop', 'org.gnome.Nautilus.desktop', 'org.gnome.Yelp.desktop']
+
+# There is no display manager to ask for the password, so a locked screen could never be unlocked.
+# The tablet locks itself.
+[org.gnome.desktop.screensaver]
+lock-enabled = false
+
+[org.gnome.desktop.lockdown]
+disable-lock-screen = true
+
+[org.gnome.desktop.session]
+idle-delay = uint32 0

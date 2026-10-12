@@ -1,0 +1,4 @@
+{
+ "ru": "Исправлены ошибка D-Bus после установки программ через apt и режим chroot: там не запускался PolicyKit, вход ждал 25 секунд, а установщик падал сразу. Долгий тап по пустому месту в «Файлах» открывает меню папки. Дальше обновления приходят уведомлением.",
+ "en": "Fixed: a D-Bus error after installing programs with apt, and the chroot mode, where PolicyKit did not start, the login waited 25 seconds and the installer failed at once. A long press on the empty part of a folder in Files opens its menu. Further updates come as a notification."
+}
