@@ -150,7 +150,10 @@ class Service:
             self.notify(say("Update of Linux Lab Helper %s", "Обновление Linux Lab Helper %s") % manifest.get("version", ""),
                         notes(manifest) or say("Fixes for the Ubuntu desktop of Linux Lab.",
                                                "Исправления для рабочего стола Ubuntu в Linux Lab."),
-                        ["install", say("Install", "Установить")], resident=True)
+                        # "default" is a tap on the notification itself: the banner shows its buttons
+                        # only when it is opened out, which a finger hardly does
+                        ["default", say("Install", "Установить"), "install", say("Install", "Установить")],
+                        resident=True)
         return True
 
     def on_action(self, _bus, _sender, _path, _interface, _signal, parameters):
