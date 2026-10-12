@@ -13,8 +13,10 @@ started again afterwards: the notification says so.
   llupdate.py            the service (gnome-session.sh starts it)
   llupdate.py check      look once and say what was found, without a notification
 
-Nothing is downloaded but the two small files until the person asks for the update. LINUXLAB_UPDATE=off
-in /etc/default/linuxlab-gnome switches the service off.
+Nothing is downloaded but the two small files until the person asks for the update. The extension of
+the shell shows the service in the top bar (dev.linuxlab.Update on the session bus): the version, what
+was found, "Check for updates" and "Install". LINUXLAB_UPDATE=off in /etc/default/linuxlab-gnome
+switches the service off.
 """
 import hashlib
 import json
@@ -22,6 +24,7 @@ import os
 import subprocess
 import sys
 import tempfile
+import threading
 import urllib.request
 
 import gi
@@ -35,7 +38,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 KEY = os.path.join(HERE, "release-key.gpg")
 RELEASE = os.path.join(HERE, "release")
 CACHE = os.path.join(GLib.get_user_cache_dir(), "linuxlab-update")
-FIRST_LOOK_S = 90
+FIRST_LOOK_S = 30
 LOOK_EVERY_S = 6 * 3600
 TIMEOUT_S = 30
 
@@ -111,17 +114,113 @@ def notes(manifest):
     return text.get("ru" if russian() else "en", "") if isinstance(text, dict) else ""
 
 
+INTERFACE = """
+<node>
+  <interface name="dev.linuxlab.Update">
+    <method name="Check"/>
+    <method name="Install"/>
+    <method name="GetState"><arg type="a{ss}" direction="out" name="state"/></method>
+    <signal name="Changed"><arg type="a{ss}" name="state"/></signal>
+  </interface>
+</node>"""
+
+
+def installed_version():
+    try:
+        with open(RELEASE) as f:
+            return f.read().split()[1]
+    except (OSError, IndexError):
+        return ""
+
+
 class Service:
+    """The looking, the notifications and dev.linuxlab.Update on the session bus, which the extension of
+    the shell shows in the top bar: state is one of idle, checking, current, available, installing,
+    installed (Linux Lab is to be started again), failed, offline."""
+
     def __init__(self):
         self.bus = Gio.bus_get_sync(Gio.BusType.SESSION)
         self.offer = None
         self.shown = 0
         self.offered_serial = 0
-        self.busy = False
         self.process = None
+        self.state = "idle"
+        self.error = ""
         self.bus.signal_subscribe("org.freedesktop.Notifications", "org.freedesktop.Notifications",
                                   "ActionInvoked", "/org/freedesktop/Notifications", None,
                                   Gio.DBusSignalFlags.NONE, self.on_action)
+        node = Gio.DBusNodeInfo.new_for_xml(INTERFACE)
+        register = getattr(self.bus, "register_object_with_closures2", None) or self.bus.register_object
+        register("/dev/linuxlab/Update", node.interfaces[0], self.on_call, None, None)
+        Gio.bus_own_name_on_connection(self.bus, "dev.linuxlab.Update", Gio.BusNameOwnerFlags.NONE, None, None)
+
+    # ---- dev.linuxlab.Update
+
+    def snapshot(self):
+        state = {"state": self.state, "installed": installed_version(), "error": self.error}
+        if self.offer:
+            state["latest"] = str(self.offer.get("version", ""))
+            state["notes"] = notes(self.offer)
+            state["page"] = "https://github.com/%s/releases/tag/%s" % (REPOSITORY, self.offer.get("tag", ""))
+        return state
+
+    def on_call(self, _bus, _sender, _path, _interface, method, _parameters, invocation):
+        if method == "Check":
+            self.check(by_hand=True)
+        elif method == "Install":
+            if self.offer and self.state == "available":
+                self.install(self.offer)
+        elif method == "GetState":
+            invocation.return_value(GLib.Variant("(a{ss})", (self.snapshot(),)))
+            return
+        invocation.return_value(None)
+
+    def set_state(self, state, error=""):
+        self.state = state
+        self.error = error
+        try:
+            self.bus.emit_signal(None, "/dev/linuxlab/Update", "dev.linuxlab.Update", "Changed",
+                                 GLib.Variant("(a{ss})", (self.snapshot(),)))
+        except GLib.Error as e:
+            log("no signal: %s" % e.message)
+
+    # ---- looking
+
+    def look(self):
+        self.check(by_hand=False)
+        return True
+
+    def check(self, by_hand):
+        if self.state in ("checking", "installing"):
+            return
+        self.set_state("checking")
+        # the network in a thread: the bus and the notifications go on meanwhile
+        threading.Thread(target=lambda: GLib.idle_add(self.checked, latest(), by_hand), daemon=True).start()
+
+    def checked(self, manifest, by_hand):
+        if not manifest:
+            self.set_state("offline" if self.offer is None else "available")
+            return False
+        if int(manifest["serial"]) <= installed_serial():
+            self.offer = None
+            self.set_state("current")
+            return False
+        self.offer = manifest
+        self.set_state("available")
+        if int(manifest["serial"]) != self.offered_serial and not by_hand:
+            self.offered_serial = int(manifest["serial"])
+            log("release %s (serial %s) is newer than serial %d" % (manifest.get("version"), manifest["serial"],
+                                                                  installed_serial()))
+            self.notify(say("Update of Linux Lab Helper %s", "Обновление Linux Lab Helper %s") % manifest.get("version", ""),
+                        notes(manifest) or say("Fixes for the Ubuntu desktop of Linux Lab.",
+                                               "Исправления для рабочего стола Ubuntu в Linux Lab."),
+                        # "default" is a tap on the notification itself: the banner shows its buttons
+                        # only when it is opened out, which a finger hardly does
+                        ["default", say("Install", "Установить"), "install", say("Install", "Установить")],
+                        resident=True)
+        return False
+
+    # ---- notifications
 
     def notify(self, summary, body, actions=(), resident=False):
         hints = {}
@@ -138,52 +237,25 @@ class Service:
         except GLib.Error as e:
             log("no notification: %s" % e.message)
 
-    def look(self):
-        if self.busy:
-            return True
-        manifest = latest()
-        if manifest and int(manifest["serial"]) > installed_serial() and int(manifest["serial"]) != self.offered_serial:
-            self.offer = manifest
-            self.offered_serial = int(manifest["serial"])
-            log("release %s (serial %s) is newer than serial %d" % (manifest.get("version"), manifest["serial"],
-                                                                  installed_serial()))
-            self.notify(say("Update of Linux Lab Helper %s", "Обновление Linux Lab Helper %s") % manifest.get("version", ""),
-                        notes(manifest) or say("Fixes for the Ubuntu desktop of Linux Lab.",
-                                               "Исправления для рабочего стола Ubuntu в Linux Lab."),
-                        # "default" is a tap on the notification itself: the banner shows its buttons
-                        # only when it is opened out, which a finger hardly does
-                        ["default", say("Install", "Установить"), "install", say("Install", "Установить")],
-                        resident=True)
-        return True
-
     def on_action(self, _bus, _sender, _path, _interface, _signal, parameters):
         number, action = parameters.unpack()
-        if number == self.shown and action in ("install", "default") and self.offer and not self.busy:
+        if number == self.shown and action in ("install", "default") and self.offer and self.state == "available":
             self.install(self.offer)
 
+    # ---- installing
+
     def install(self, manifest):
-        self.busy = True
+        self.set_state("installing")
         self.notify(say("Updating Linux Lab Helper", "Обновляю Linux Lab Helper"),
                     say("A few minutes. Programs keep running.", "Несколько минут. Программы продолжают работать."),
                     resident=True)
-        GLib.idle_add(self.run, manifest)
+        threading.Thread(target=lambda: GLib.idle_add(self.downloaded, manifest, download(manifest)), daemon=True).start()
 
-    def run(self, manifest):
-        thing = manifest["installer"]
-        # from the release of this very manifest, should a newer one appear in the meantime
-        base = "https://github.com/%s/releases/download/%s/" % (REPOSITORY, manifest["tag"]) if manifest.get("tag") else LATEST
-        try:
-            data = fetch(base + thing["name"], int(thing["size"]))
-            if len(data) != int(thing["size"]) or hashlib.sha256(data).hexdigest() != thing["sha256"]:
-                raise ValueError("the installer is not the one the manifest names")
-            os.makedirs(CACHE, exist_ok=True)
-            path = os.path.join(CACHE, "linuxlab-helper.sh")
-            with open(path + ".new", "wb") as f:
-                f.write(data)
-            os.replace(path + ".new", path)
-        except (OSError, ValueError) as e:
-            log("download failed: %s" % e)
-            self.done(False, say("Could not download it: %s", "Не удалось скачать: %s") % e)
+    def downloaded(self, _manifest, result):
+        path, error = result
+        if error:
+            log("download failed: %s" % error)
+            self.done(False, say("Could not download it: %s", "Не удалось скачать: %s") % error)
             return False
         self.process = subprocess.Popen(["sudo", "-n", "bash", path, "update"], stdin=subprocess.DEVNULL,
                                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -198,13 +270,33 @@ class Service:
                       "Журнал: /var/log/linuxlab-helper.log, копия лежит в «Загрузках»."))
 
     def done(self, ok, body):
-        self.busy = False
         if ok:
             self.offer = None
+            self.set_state("installed")
         else:
             self.offered_serial = 0
+            self.set_state("failed", body)
         self.notify(say("Linux Lab Helper is updated", "Linux Lab Helper обновлён") if ok
                     else say("The update failed", "Обновление не удалось"), body, resident=ok)
+
+
+def download(manifest):
+    """The installer of @manifest in the cache, checked: (path, None), or (None, what went wrong)."""
+    thing = manifest["installer"]
+    # from the release of this very manifest, should a newer one appear in the meantime
+    base = "https://github.com/%s/releases/download/%s/" % (REPOSITORY, manifest["tag"]) if manifest.get("tag") else LATEST
+    try:
+        data = fetch(base + thing["name"], int(thing["size"]))
+        if len(data) != int(thing["size"]) or hashlib.sha256(data).hexdigest() != thing["sha256"]:
+            raise ValueError("the installer is not the one the manifest names")
+        os.makedirs(CACHE, exist_ok=True)
+        path = os.path.join(CACHE, "linuxlab-helper.sh")
+        with open(path + ".new", "wb") as f:
+            f.write(data)
+        os.replace(path + ".new", path)
+    except (OSError, ValueError) as e:
+        return None, str(e)
+    return path, None
 
 
 def enabled():

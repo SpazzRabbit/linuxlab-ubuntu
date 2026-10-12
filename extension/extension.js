@@ -21,6 +21,10 @@
 // sensor of a built-in panel. While the helper is the sensor, the button is shown; it is the stock
 // one and switches the stock setting, which llandroid.py obeys.
 //
+// The updates of Linux Lab Helper (llupdate.py, which is dev.linuxlab.Update on the session bus) have an
+// icon in the top bar: its menu says which version is installed and what was found, looks for updates
+// on request and installs one. The icon turns into the one of an available update while there is one.
+//
 // On a PC systemd starts gsd-xsettings together with Xwayland. There is no systemd here, so the
 // daemon is started from the shell, which knows the X display. Without it X11 programs get neither
 // the theme nor the scale.
@@ -28,12 +32,14 @@ import Clutter from 'gi://Clutter';
 import Gio from 'gi://Gio';
 import GLib from 'gi://GLib';
 import GObject from 'gi://GObject';
+import Pango from 'gi://Pango';
 import St from 'gi://St';
 
 import {Extension, InjectionManager, gettext as _} from 'resource:///org/gnome/shell/extensions/extension.js';
 import * as KeyboardUI from 'resource:///org/gnome/shell/ui/keyboard.js';
 import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 import * as PanelMenu from 'resource:///org/gnome/shell/ui/panelMenu.js';
+import * as PopupMenu from 'resource:///org/gnome/shell/ui/popupMenu.js';
 import * as SystemActions from 'resource:///org/gnome/shell/misc/systemActions.js';
 
 const XSETTINGS = '/usr/libexec/gsd-xsettings';
@@ -56,6 +62,112 @@ const INPUT_INTERFACE = `
     <signal name="Wanted"><arg type="u" name="state"/></signal>
   </interface>
 </node>`;
+
+const UPDATE_INTERFACE = `
+<node>
+  <interface name="dev.linuxlab.Update">
+    <method name="Check"/>
+    <method name="Install"/>
+    <method name="GetState"><arg type="a{ss}" direction="out" name="state"/></method>
+    <signal name="Changed"><arg type="a{ss}" name="state"/></signal>
+  </interface>
+</node>`;
+const UpdateProxy = Gio.DBusProxy.makeProxyWrapper(UPDATE_INTERFACE);
+const RELEASES = 'https://github.com/SpazzRabbit/linuxlab-ubuntu/releases';
+
+// in the language of the session: this extension has no translations of its own
+const RUSSIAN = GLib.get_language_names().some(name => name.startsWith('ru'));
+function tr(english, russian) {
+    return RUSSIAN ? russian : english;
+}
+
+const UpdateButton = GObject.registerClass(
+class UpdateButton extends PanelMenu.Button {
+    _init(path) {
+        super._init(0.5, 'Linux Lab Helper');
+        this._ownIcon = Gio.icon_new_for_string(`${path}/icons/linuxlab-helper-symbolic.svg`);
+        this._icon = new St.Icon({gicon: this._ownIcon, style_class: 'system-status-icon'});
+        this.add_child(this._icon);
+
+        this._title = new PopupMenu.PopupMenuItem('Linux Lab Helper', {reactive: false});
+        this._title.label.add_style_class_name('popup-subtitle-menu-item');
+        this._status = new PopupMenu.PopupMenuItem('', {reactive: false});
+        this._status.label.style = 'max-width: 22em;';
+        this._status.label.clutter_text.line_wrap = true;
+        this._status.label.clutter_text.ellipsize = Pango.EllipsizeMode.NONE;
+        this.menu.addMenuItem(this._title);
+        this.menu.addMenuItem(this._status);
+        this.menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
+        this._install = this.menu.addAction('', () => this._proxy?.InstallAsync().catch(logError));
+        this._check = this.menu.addAction(tr('Check for updates', 'Проверить обновления'),
+            () => this._proxy?.CheckAsync().catch(logError));
+        this._news = this.menu.addAction(tr('What is new', 'Что нового'),
+            () => Gio.AppInfo.launch_default_for_uri(this._page ?? RELEASES, null));
+
+        this._proxy = null;
+        this._changedId = 0;
+        this.hide();
+        // shown while the service runs (LINUXLAB_UPDATE=off switches it off)
+        this._watchId = Gio.bus_watch_name(Gio.BusType.SESSION, 'dev.linuxlab.Update',
+            Gio.BusNameWatcherFlags.NONE, () => this._connect(), () => this._gone());
+    }
+
+    _connect() {
+        new UpdateProxy(Gio.DBus.session, 'dev.linuxlab.Update', '/dev/linuxlab/Update', (proxy, error) => {
+            if (error || this._watchId === 0) {
+                if (error)
+                    logError(error);
+                return;
+            }
+            this._gone();
+            this._proxy = proxy;
+            this._changedId = proxy.connectSignal('Changed', (_proxy, _owner, [state]) => this._show(state));
+            proxy.GetStateAsync().then(([state]) => this._show(state)).catch(logError);
+        });
+    }
+
+    _gone() {
+        if (this._proxy && this._changedId)
+            this._proxy.disconnectSignal(this._changedId);
+        this._proxy = null;
+        this._changedId = 0;
+        this.hide();
+    }
+
+    _show(state) {
+        if (!this._proxy)
+            return;
+        this._page = state.page;
+        this._title.label.text = state.installed ? `Linux Lab Helper ${state.installed}` : 'Linux Lab Helper';
+        const latest = state.latest ?? '';
+        const texts = {
+            idle: tr('Updates are looked for every few hours.', 'Обновления проверяются раз в несколько часов.'),
+            checking: tr('Looking for updates', 'Проверяю обновления'),
+            current: tr('This is the latest version.', 'Установлена последняя версия.'),
+            available: tr(`Version ${latest} is out.`, `Вышла версия ${latest}.`) + (state.notes ? `\n\n${state.notes}` : ''),
+            installing: tr('Updating, a few minutes. Programs keep running.', 'Обновляю, несколько минут. Программы продолжают работать.'),
+            installed: tr('Updated. Close Linux Lab and open it again.', 'Обновлено. Закройте Linux Lab и откройте снова.'),
+            failed: state.error || tr('The update failed.', 'Обновление не удалось.'),
+            offline: tr('GitHub does not answer.', 'GitHub не отвечает.'),
+        };
+        this._status.label.text = texts[state.state] ?? state.state;
+        const busy = state.state === 'checking' || state.state === 'installing';
+        this._check.setSensitive(!busy);
+        this._install.visible = state.state === 'available';
+        this._install.label.text = tr(`Install ${latest}`, `Установить ${latest}`);
+        this._news.visible = state.state === 'available';
+        this._icon.gicon = state.state === 'available'
+            ? new Gio.ThemedIcon({name: 'software-update-available-symbolic'}) : this._ownIcon;
+        this.show();
+    }
+
+    _onDestroy() {
+        Gio.bus_unwatch_name(this._watchId);
+        this._watchId = 0;
+        this._gone();
+        super._onDestroy();
+    }
+});
 
 const KeyboardButton = GObject.registerClass(
 class KeyboardButton extends PanelMenu.Button {
@@ -164,6 +276,8 @@ export default class LinuxLabExtension extends Extension {
 
         this._keyboardButton = new KeyboardButton(() => this._toggleKeyboard());
         Main.panel.addToStatusArea('linuxlab-keyboard', this._keyboardButton, 0, 'right');
+        this._updateButton = new UpdateButton(this.path);
+        Main.panel.addToStatusArea('linuxlab-update', this._updateButton, 0, 'right');
         Main.keyboard.connectObject('visibility-changed', () => {
             if (!Main.keyboard.visible)
                 this._keyboardWanted = false;
@@ -185,6 +299,8 @@ export default class LinuxLabExtension extends Extension {
         global.stage.context.get_backend().get_default_seat().disconnectObject(this);
         this._keyboardButton.destroy();
         this._keyboardButton = null;
+        this._updateButton.destroy();
+        this._updateButton = null;
 
         global.stage.disconnectObject(this);
         this._input.unexport();

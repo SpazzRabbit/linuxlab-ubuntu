@@ -137,6 +137,8 @@ mv /etc/ld.so.preload.new /etc/ld.so.preload
 mkdir -p $EXT
 put "$src/extension/metadata.json" $EXT/metadata.json
 put "$src/extension/extension.js" $EXT/extension.js
+mkdir -p $EXT/icons
+put "$src/extension/icons/linuxlab-helper-symbolic.svg" $EXT/icons/linuxlab-helper-symbolic.svg
 put "$src/99_linuxlab.gschema.override" /usr/share/glib-2.0/schemas/99_linuxlab.gschema.override
 glib-compile-schemas /usr/share/glib-2.0/schemas
 

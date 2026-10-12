@@ -1,7 +1,7 @@
 {
   "uuid": "linuxlab@linuxlab-touchfix",
   "name": "Linux Lab",
-  "description": "Makes GNOME Shell at home inside HONOR Linux Lab: no screen sharing indicator for the built-in screen, the on-screen keyboard of a tablet with a button in the top bar, settings for X11 programs.",
+  "description": "Makes GNOME Shell at home inside HONOR Linux Lab: no screen sharing indicator for the built-in screen, the on-screen keyboard of a tablet with a button in the top bar, the updates of Linux Lab Helper in the top bar, settings for X11 programs.",
   "shell-version": ["50"],
   "url": ""
 }

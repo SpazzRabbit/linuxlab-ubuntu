@@ -32,7 +32,9 @@ half after the start and then every six hours. A release carries `manifest.json`
 serial is higher than the one the installer wrote to `/opt/linuxlab-gnome/release`, a notification
 offers it, and "Install" downloads the installer of that release, checks its size and SHA-256 against
 the manifest and runs `linuxlab-helper.sh update`: `install.sh update` and the touch module again,
-the chosen desktop stays. Linux Lab is then closed and opened again. `llupdate.py check` looks once;
+the chosen desktop stays. Linux Lab is then closed and opened again. The extension shows the same in
+the top bar: an icon whose menu tells the version and what was found, with "Check for updates" and
+"Install" (`llupdate.py` is `dev.linuxlab.Update` on the session bus for it). `llupdate.py check` looks once;
 `LINUXLAB_UPDATE=off` in `/etc/default/linuxlab-gnome` switches it off.
 
 The app offers the same update while the Linux side was set up by an older version of it (the
