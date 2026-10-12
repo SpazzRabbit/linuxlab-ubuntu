@@ -25,6 +25,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 import urllib.request
 
 import gi
@@ -89,9 +90,11 @@ def verified(data, signature):
 
 def latest():
     """The signed manifest of the latest release, or None (no network, no release, a bad signature)."""
+    # a query of its own each time: right after a release, "latest" is still the old one in a cache for a while
+    fresh = "?t=%d" % time.time()
     try:
-        data = fetch(LATEST + "manifest.json", 65536)
-        signature = fetch(LATEST + "manifest.json.sig", 65536)
+        data = fetch(LATEST + "manifest.json" + fresh, 65536)
+        signature = fetch(LATEST + "manifest.json.sig" + fresh, 65536)
     except (OSError, ValueError) as e:
         log("no answer from GitHub: %s" % e)
         return None
