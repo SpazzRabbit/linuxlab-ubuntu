@@ -17,7 +17,7 @@ notes=host/notes/$version.json
 [ -f "$notes" ] || { echo "release: no $notes" >&2; exit 1; }
 [ -z "$(git status --porcelain)" ] || { echo "release: commit first, a release is made of what is committed" >&2; exit 1; }
 # llupdate.py offers only a serial higher than the one installed
-published=$(curl -fsL "https://github.com/$repo/releases/latest/download/manifest.json" |
+published=$(curl -fsL "https://github.com/$repo/releases/latest/download/manifest.json?t=$(date +%s)" |
     python3 -c 'import json, sys; print(json.load(sys.stdin)["serial"])' 2>/dev/null || echo 0)
 [ "$serial" -gt "$published" ] || { echo "release: serial $serial is not above $published, raise it in host/version" >&2; exit 1; }
 
